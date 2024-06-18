@@ -1,5 +1,25 @@
 QBCore.Functions = {}
 
+-- Callbacks
+
+function QBCore.Functions.CreateClientCallback(name, cb)
+    QBCore.ClientCallbacks[name] = cb
+end
+
+function QBCore.Functions.TriggerClientCallback(name, cb, ...)
+    if not QBCore.ClientCallbacks[name] then return end
+    QBCore.ClientCallbacks[name](cb, ...)
+end
+
+function QBCore.Functions.TriggerCallback(name, cb, ...)
+    QBCore.ServerCallbacks[name] = cb
+    TriggerServerEvent('QBCore:Server:TriggerCallback', name, ...)
+end
+
+function QBCore.Debug(resource, obj, depth)
+    TriggerServerEvent('QBCore:DebugSomething', resource, obj, depth)
+end
+
 -- Player
 
 function QBCore.Functions.GetPlayerData(cb)
@@ -16,115 +36,141 @@ function QBCore.Functions.HasItem(items, amount)
     return exports['qs-inventory']:HasItem(items, amount)
 end
 
--- Utility
-
-function QBCore.Functions.DrawText(x, y, width, height, scale, r, g, b, a, text)
-    -- Use local function instead
-    SetTextFont(4)
-    SetTextScale(scale, scale)
-    SetTextColour(r, g, b, a)
-    BeginTextCommandDisplayText('STRING')
-    AddTextComponentSubstringPlayerName(text)
-    EndTextCommandDisplayText(x - width / 2, y - height / 2 + 0.005)
+---@param entity number - The entity to look at
+---@param timeout number - The time in milliseconds before the function times out
+---@param speed number - The speed at which the entity should turn
+---@return number - The time at which the entity was looked at
+function QBCore.Functions.LookAtEntity(entity, timeout, speed)
+    local involved = GetInvokingResource()
+    if not DoesEntityExist(entity) then
+        turnPromise:reject(involved .. ' :^1  Entity does not exist')
+        return turnPromise.value
+    end
+    if not type(entity) == 'number' then
+        turnPromise:reject(involved .. ' :^1  Entity must be a number')
+        return turnPromise.value
+    end
+    if not type(speed) == 'number' then
+        turnPromise:reject(involved .. ' :^1  Speed must be a number')
+        return turnPromise.value
+    end
+    if speed > 5.0 then speed = 5.0 end
+    if timeout > 5000 then timeout = 5000 end
+    local ped = PlayerPedId()
+    local playerPos = GetEntityCoords(ped)
+    local targetPos = GetEntityCoords(entity)
+    local dx = targetPos.x - playerPos.x
+    local dy = targetPos.y - playerPos.y
+    local targetHeading = GetHeadingFromVector_2d(dx, dy)
+    local turnSpeed = speed
+    local startTimeout = GetGameTimer()
+    while true do
+        local currentHeading = GetEntityHeading(ped)
+        local diff = targetHeading - currentHeading
+        if math.abs(diff) < 2 then
+            break
+        end
+        if diff < -180 then
+            diff = diff + 360
+        elseif diff > 180 then
+            diff = diff - 360
+        end
+        turnSpeed = speed + (2.5 - speed) * (1 - math.abs(diff) / 180)
+        if diff > 0 then
+            currentHeading = currentHeading + turnSpeed
+        else
+            currentHeading = currentHeading - turnSpeed
+        end
+        SetEntityHeading(ped, currentHeading)
+        Wait(0)
+        if (startTimeout + timeout) < GetGameTimer() then break end
+    end
+    SetEntityHeading(ped, targetHeading)
 end
 
-function QBCore.Functions.DrawText3D(x, y, z, text)
-    -- Use local function instead
-    SetTextScale(0.35, 0.35)
-    SetTextFont(4)
-    SetTextProportional(1)
-    SetTextColour(255, 255, 255, 215)
-    BeginTextCommandDisplayText('STRING')
-    SetTextCentre(true)
-    AddTextComponentSubstringPlayerName(text)
-    SetDrawOrigin(x, y, z, 0)
-    EndTextCommandDisplayText(0.0, 0.0)
-    local factor = (string.len(text)) / 370
-    DrawRect(0.0, 0.0 + 0.0125, 0.017 + factor, 0.03, 0, 0, 0, 75)
-    ClearDrawOrigin()
-end
-
-function QBCore.Functions.RequestAnimDict(animDict)
-	if HasAnimDictLoaded(animDict) then return end
-	RequestAnimDict(animDict)
-	while not HasAnimDictLoaded(animDict) do
-		Wait(0)
-	end
-end
-
+-- Function to run an animation
+--- @param animDic string: The name of the animation dictionary
+--- @param animName string - The name of the animation within the dictionary
+--- @param duration number - The duration of the animation in milliseconds. -1 will play the animation indefinitely
+--- @param upperbodyOnly boolean - If true, the animation will only affect the upper body of the ped
+--- @return number - The timestamp indicating when the animation concluded. For animations set to loop indefinitely, this will still return the maximum duration of the animation.
 function QBCore.Functions.PlayAnim(animDict, animName, upperbodyOnly, duration)
+    local invoked = GetInvokingResource()
+    local animPromise = promise.new()
+    if type(animDict) ~= 'string' or type(animName) ~= 'string' then
+        animPromise:reject(invoked .. ' :^1  Wrong type for animDict or animName')
+        return animPromise.value
+    end
+    if not DoesAnimDictExist(animDict) then
+        animPromise:reject(invoked .. ' :^1  Animation dictionary does not exist')
+        return animPromise.value
+    end
     local flags = upperbodyOnly and 16 or 0
     local runTime = duration or -1
-    QBCore.Functions.RequestAnimDict(animDict)
-    TaskPlayAnim(PlayerPedId(), animDict, animName, 8.0, 1.0, runTime, flags, 0.0, false, false, true)
+    if runTime == -1 then flags = 49 end
+    local ped = PlayerPedId()
+    local start = GetGameTimer()
+    while not HasAnimDictLoaded(animDict) do
+        RequestAnimDict(animDict)
+        if (GetGameTimer() - start) > 5000 then
+            animPromise:reject(invoked .. ' :^1  Animation dictionary failed to load')
+            return animPromise.value
+        end
+        Wait(1)
+    end
+    TaskPlayAnim(ped, animDict, animName, 8.0, 8.0, runTime, flags, 0, true, true, true)
+    Wait(10) -- Wait a bit for the animation to start, then check if it exists
+    local currentTime = GetAnimDuration(animDict, animName)
+    if currentTime == 0 then
+        animPromise:reject(invoked .. ' :^1  Animation does not exist')
+        return animPromise.value
+    end
+    local fullDuration = currentTime * 1000
+    -- If duration is provided and is less than the full duration, use it instead
+    local waitTime = duration and math.min(duration, fullDuration) or fullDuration
+    Wait(waitTime)
     RemoveAnimDict(animDict)
+    animPromise:resolve(currentTime)
+    return animPromise.value
 end
 
-function QBCore.Functions.LoadModel(model)
-    if HasModelLoaded(model) then return end
-	RequestModel(model)
-	while not HasModelLoaded(model) do
-		Wait(0)
-	end
-end
-
-function QBCore.Functions.LoadAnimSet(animSet)
-    if HasAnimSetLoaded(animSet) then return end
-    RequestAnimSet(animSet)
-    while not HasAnimSetLoaded(animSet) do
-        Wait(0)
-    end
-end
-
-RegisterNUICallback('getNotifyConfig', function(_, cb)
-    cb(QBCore.Config.Notify)
-end)
-
-function QBCore.Functions.Notify(text, texttype, length)
-    if type(text) == "table" then
-        local ttext = text.text or 'Placeholder'
-        local caption = text.caption or 'Placeholder'
-        texttype = texttype or 'primary'
-        length = length or 5000
-        SendNUIMessage({
-            action = 'notify',
-            type = texttype,
-            length = length,
-            text = ttext,
-            caption = caption
-        })
+function QBCore.Functions.IsWearingGloves()
+    local ped = PlayerPedId()
+    local armIndex = GetPedDrawableVariation(ped, 3)
+    local model = GetEntityModel(ped)
+    if model == `mp_m_freemode_01` then
+        if QBCore.Shared.MaleNoGloves[armIndex] then
+            return false
+        end
     else
-        texttype = texttype or 'primary'
-        length = length or 5000
-        SendNUIMessage({
-            action = 'notify',
-            type = texttype,
-            length = length,
-            text = text
-        })
+        if QBCore.Shared.FemaleNoGloves[armIndex] then
+            return false
+        end
     end
+    return true
 end
 
-function QBCore.Debug(resource, obj, depth)
-    TriggerServerEvent('QBCore:DebugSomething', resource, obj, depth)
-end
+-- NUI Calls
 
--- Callback Functions --
+function QBCore.Functions.Notify(text, texttype, length, icon)
+    local message = {
+        action = 'notify',
+        type = texttype or 'primary',
+        length = length or 5000,
+    }
 
--- Client Callback
-function QBCore.Functions.CreateClientCallback(name, cb)
-    QBCore.ClientCallbacks[name] = cb
-end
+    if type(text) == 'table' then
+        message.text = text.text or 'Placeholder'
+        message.caption = text.caption or 'Placeholder'
+    else
+        message.text = text
+    end
 
-function QBCore.Functions.TriggerClientCallback(name, cb, ...)
-    if not QBCore.ClientCallbacks[name] then return end
-    QBCore.ClientCallbacks[name](cb, ...)
-end
+    if icon then
+        message.icon = icon
+    end
 
--- Server Callback
-function QBCore.Functions.TriggerCallback(name, cb, ...)
-    QBCore.ServerCallbacks[name] = cb
-    TriggerServerEvent('QBCore:Server:TriggerCallback', name, ...)
+    SendNUIMessage(message)
 end
 
 function QBCore.Functions.Progressbar(name, label, duration, useWhileDead, canCancel, disableControls, animation, prop, propTwo, onFinish, onCancel)
@@ -152,7 +198,7 @@ function QBCore.Functions.Progressbar(name, label, duration, useWhileDead, canCa
     end)
 end
 
--- Getters
+-- World Getters
 
 function QBCore.Functions.GetVehicles()
     return GetGamePool('CVehicle')
@@ -166,18 +212,60 @@ function QBCore.Functions.GetPlayers()
     return GetActivePlayers()
 end
 
+function QBCore.Functions.GetPlayersFromCoords(coords, distance)
+    local players = GetActivePlayers()
+    local ped = PlayerPedId()
+    if coords then
+        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
+    else
+        coords = GetEntityCoords(ped)
+    end
+    distance = distance or 5
+    local closePlayers = {}
+    for _, player in ipairs(players) do
+        local targetCoords = GetEntityCoords(GetPlayerPed(player))
+        local targetdistance = #(targetCoords - coords)
+        if targetdistance <= distance then
+            closePlayers[#closePlayers + 1] = player
+        end
+    end
+    return closePlayers
+end
+
+function QBCore.Functions.GetClosestPlayer(coords)
+    local ped = PlayerPedId()
+    if coords then
+        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
+    else
+        coords = GetEntityCoords(ped)
+    end
+    local closestPlayers = QBCore.Functions.GetPlayersFromCoords(coords)
+    local closestDistance = -1
+    local closestPlayer = -1
+    for i = 1, #closestPlayers, 1 do
+        if closestPlayers[i] ~= PlayerId() and closestPlayers[i] ~= -1 then
+            local pos = GetEntityCoords(GetPlayerPed(closestPlayers[i]))
+            local distance = #(pos - coords)
+
+            if closestDistance == -1 or closestDistance > distance then
+                closestPlayer = closestPlayers[i]
+                closestDistance = distance
+            end
+        end
+    end
+    return closestPlayer, closestDistance
+end
+
 function QBCore.Functions.GetPeds(ignoreList)
     local pedPool = GetGamePool('CPed')
     local peds = {}
+    local ignoreTable = {}
     ignoreList = ignoreList or {}
-    for i = 1, #pedPool, 1 do
-        local found = false
-        for j = 1, #ignoreList, 1 do
-            if ignoreList[j] == pedPool[i] then
-                found = true
-            end
-        end
-        if not found then
+    for i = 1, #ignoreList do
+        ignoreTable[ignoreList[i]] = true
+    end
+    for i = 1, #pedPool do
+        if not ignoreTable[pedPool[i]] then
             peds[#peds + 1] = pedPool[i]
         end
     end
@@ -205,67 +293,6 @@ function QBCore.Functions.GetClosestPed(coords, ignoreList)
         end
     end
     return closestPed, closestDistance
-end
-
-function QBCore.Functions.IsWearingGloves()
-    local ped = PlayerPedId()
-    local armIndex = GetPedDrawableVariation(ped, 3)
-    local model = GetEntityModel(ped)
-    if model == `mp_m_freemode_01` then
-        if QBCore.Shared.MaleNoGloves[armIndex] then
-            return false
-        end
-    else
-        if QBCore.Shared.FemaleNoGloves[armIndex] then
-            return false
-        end
-    end
-    return true
-end
-
-function QBCore.Functions.GetClosestPlayer(coords)
-    local ped = PlayerPedId()
-    if coords then
-        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
-    else
-        coords = GetEntityCoords(ped)
-    end
-    local closestPlayers = QBCore.Functions.GetPlayersFromCoords(coords)
-    local closestDistance = -1
-    local closestPlayer = -1
-    for i = 1, #closestPlayers, 1 do
-        if closestPlayers[i] ~= PlayerId() and closestPlayers[i] ~= -1 then
-            local pos = GetEntityCoords(GetPlayerPed(closestPlayers[i]))
-            local distance = #(pos - coords)
-
-            if closestDistance == -1 or closestDistance > distance then
-                closestPlayer = closestPlayers[i]
-                closestDistance = distance
-            end
-        end
-    end
-    return closestPlayer, closestDistance
-end
-
-function QBCore.Functions.GetPlayersFromCoords(coords, distance)
-    local players = GetActivePlayers()
-    local ped = PlayerPedId()
-    if coords then
-        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
-    else
-        coords = GetEntityCoords(ped)
-    end
-    distance = distance or 5
-    local closePlayers = {}
-    for _, player in pairs(players) do
-        local target = GetPlayerPed(player)
-        local targetCoords = GetEntityCoords(target)
-        local targetdistance = #(targetCoords - coords)
-        if targetdistance <= distance then
-            closePlayers[#closePlayers + 1] = player
-        end
-    end
-    return closePlayers
 end
 
 function QBCore.Functions.GetClosestVehicle(coords)
@@ -311,52 +338,19 @@ function QBCore.Functions.GetClosestObject(coords)
     return closestObject, closestDistance
 end
 
-function QBCore.Functions.GetClosestBone(entity, list)
-    local playerCoords, bone, coords, distance = GetEntityCoords(PlayerPedId())
-    for _, element in pairs(list) do
-        local boneCoords = GetWorldPositionOfEntityBone(entity, element.id or element)
-        local boneDistance = #(playerCoords - boneCoords)
-        if not coords then
-            bone, coords, distance = element, boneCoords, boneDistance
-        elseif distance > boneDistance then
-            bone, coords, distance = element, boneCoords, boneDistance
-        end
-    end
-    if not bone then
-        bone = {id = GetEntityBoneIndexByName(entity, "bodyshell"), type = "remains", name = "bodyshell"}
-        coords = GetWorldPositionOfEntityBone(entity, bone.id)
-        distance = #(coords - playerCoords)
-    end
-    return bone, coords, distance
-end
-
-function QBCore.Functions.GetBoneDistance(entity, boneType, boneIndex)
-    local bone
-    if boneType == 1 then
-        bone = GetPedBoneIndex(entity, boneIndex)
-    else
-        bone = GetEntityBoneIndexByName(entity, boneIndex)
-    end
-    local boneCoords = GetWorldPositionOfEntityBone(entity, bone)
-    local playerCoords = GetEntityCoords(PlayerPedId())
-    return #(boneCoords - playerCoords)
-end
-
-function QBCore.Functions.AttachProp(ped, model, boneId, x, y, z, xR, yR, zR, vertex)
-    local modelHash = type(model) == 'string' and GetHashKey(model) or model
-    local bone = GetPedBoneIndex(ped, boneId)
-    QBCore.Functions.LoadModel(modelHash)
-    local prop = CreateObject(modelHash, 1.0, 1.0, 1.0, 1, 1, 0)
-    AttachEntityToEntity(prop, ped, bone, x, y, z, xR, yR, zR, 1, 1, 0, 1, not vertex and 2 or 0, 1)
-    SetModelAsNoLongerNeeded(modelHash)
-    return prop
-end
-
 -- Vehicle
+
+function QBCore.Functions.LoadModel(model)
+    if HasModelLoaded(model) then return end
+    RequestModel(model)
+    while not HasModelLoaded(model) do
+        Wait(0)
+    end
+end
 
 function QBCore.Functions.SpawnVehicle(model, cb, coords, isnetworked, teleportInto)
     local ped = PlayerPedId()
-    model = type(model) == 'string' and GetHashKey(model) or model
+    model = type(model) == 'string' and joaat(model) or model
     if not IsModelInCdimage(model) then return end
     if coords then
         coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
@@ -392,25 +386,6 @@ function QBCore.Functions.GetVehicleLabel(vehicle)
     return GetLabelText(GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)))
 end
 
-function QBCore.Functions.SpawnClear(coords, radius)
-    if coords then
-        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
-    else
-        coords = GetEntityCoords(PlayerPedId())
-    end
-    local vehicles = GetGamePool('CVehicle')
-    local closeVeh = {}
-    for i = 1, #vehicles, 1 do
-        local vehicleCoords = GetEntityCoords(vehicles[i])
-        local distance = #(vehicleCoords - coords)
-        if distance <= radius then
-            closeVeh[#closeVeh + 1] = vehicles[i]
-        end
-    end
-    if #closeVeh > 0 then return false end
-    return true
-end
-
 function QBCore.Functions.GetVehicleProperties(vehicle)
     if DoesEntityExist(vehicle) then
         local pearlescentColor, wheelColor = GetVehicleExtraColours(vehicle)
@@ -418,12 +393,12 @@ function QBCore.Functions.GetVehicleProperties(vehicle)
         local colorPrimary, colorSecondary = GetVehicleColours(vehicle)
         if GetIsVehiclePrimaryColourCustom(vehicle) then
             local r, g, b = GetVehicleCustomPrimaryColour(vehicle)
-            colorPrimary = {r, g, b}
+            colorPrimary = { r, g, b }
         end
 
         if GetIsVehicleSecondaryColourCustom(vehicle) then
             local r, g, b = GetVehicleCustomSecondaryColour(vehicle)
-            colorSecondary = {r, g, b}
+            colorSecondary = { r, g, b }
         end
 
         local extras = {}
@@ -446,7 +421,7 @@ function QBCore.Functions.GetVehicleProperties(vehicle)
 
         local tireBurstState = {}
         for i = 0, 5 do
-           tireBurstState[i] = IsVehicleTyreBurst(vehicle, i, false)
+            tireBurstState[i] = IsVehicleTyreBurst(vehicle, i, false)
         end
 
         local tireBurstCompletely = {}
@@ -462,6 +437,14 @@ function QBCore.Functions.GetVehicleProperties(vehicle)
         local doorStatus = {}
         for i = 0, 5 do
             doorStatus[i] = IsVehicleDoorDamaged(vehicle, i) == 1
+        end
+
+        local xenonColor
+        local hasCustom, r, g, b = GetVehicleXenonLightsCustomColor(vehicle)
+        if hasCustom then
+            xenonColor = table.pack(r, g, b)
+        else
+            xenonColor = GetVehicleXenonLightsColor(vehicle)
         end
 
         return {
@@ -488,7 +471,6 @@ function QBCore.Functions.GetVehicleProperties(vehicle)
             windowTint = GetVehicleWindowTint(vehicle),
             windowStatus = windowStatus,
             doorStatus = doorStatus,
-            xenonColor = GetVehicleXenonLightsColour(vehicle),
             neonEnabled = {
                 IsVehicleNeonLightEnabled(vehicle, 0),
                 IsVehicleNeonLightEnabled(vehicle, 1),
@@ -496,10 +478,10 @@ function QBCore.Functions.GetVehicleProperties(vehicle)
                 IsVehicleNeonLightEnabled(vehicle, 3)
             },
             neonColor = table.pack(GetVehicleNeonLightsColour(vehicle)),
-            headlightColor = GetVehicleHeadlightsColour(vehicle),
             interiorColor = GetVehicleInteriorColour(vehicle),
             extras = extras,
             tyreSmokeColor = table.pack(GetVehicleTyreSmokeColor(vehicle)),
+            xenonColor = xenonColor,
             modSpoilers = GetVehicleMod(vehicle, 0),
             modFrontBumper = GetVehicleMod(vehicle, 1),
             modRearBumper = GetVehicleMod(vehicle, 2),
@@ -599,7 +581,7 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
             SetVehicleOilLevel(vehicle, props.oilLevel)
         end
         if props.color1 then
-            if type(props.color1) == "number" then
+            if type(props.color1) == 'number' then
                 ClearVehicleCustomPrimaryColour(vehicle)
                 SetVehicleColours(vehicle, props.color1, colorSecondary)
             else
@@ -607,7 +589,7 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
             end
         end
         if props.color2 then
-            if type(props.color2) == "number" then
+            if type(props.color2) == 'number' then
                 ClearVehicleCustomSecondaryColour(vehicle)
                 SetVehicleColours(vehicle, props.color1 or colorPrimary, props.color2)
             else
@@ -671,9 +653,6 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
         end
         if props.neonColor then
             SetVehicleNeonLightsColour(vehicle, props.neonColor[1], props.neonColor[2], props.neonColor[3])
-        end
-        if props.headlightColor then
-            SetVehicleHeadlightsColour(vehicle, props.headlightColor)
         end
         if props.interiorColor then
             SetVehicleInteriorColour(vehicle, props.interiorColor)
@@ -757,7 +736,11 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
             ToggleVehicleMod(vehicle, 22, props.modXenon)
         end
         if props.xenonColor then
-            SetVehicleXenonLightsColor(vehicle, props.xenonColor)
+            if type(props.xenonColor) == 'table' then
+                SetVehicleXenonLightsCustomColor(vehicle, props.xenonColor[1], props.xenonColor[2], props.xenonColor[3])
+            else
+                SetVehicleXenonLightsColor(vehicle, props.xenonColor)
+            end
         end
         if props.modFrontWheels then
             SetVehicleMod(vehicle, 23, props.modFrontWheels, false)
@@ -853,6 +836,110 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
     end
 end
 
+-- Unused
+
+function QBCore.Functions.DrawText(x, y, width, height, scale, r, g, b, a, text)
+    -- Use local function instead
+    SetTextFont(4)
+    SetTextScale(scale, scale)
+    SetTextColour(r, g, b, a)
+    BeginTextCommandDisplayText('STRING')
+    AddTextComponentSubstringPlayerName(text)
+    EndTextCommandDisplayText(x - width / 2, y - height / 2 + 0.005)
+end
+
+function QBCore.Functions.DrawText3D(x, y, z, text)
+    -- Use local function instead
+    SetTextScale(0.35, 0.35)
+    SetTextFont(4)
+    SetTextProportional(1)
+    SetTextColour(255, 255, 255, 215)
+    BeginTextCommandDisplayText('STRING')
+    SetTextCentre(true)
+    AddTextComponentSubstringPlayerName(text)
+    SetDrawOrigin(x, y, z, 0)
+    EndTextCommandDisplayText(0.0, 0.0)
+    local factor = (string.len(text)) / 370
+    DrawRect(0.0, 0.0 + 0.0125, 0.017 + factor, 0.03, 0, 0, 0, 75)
+    ClearDrawOrigin()
+end
+
+function QBCore.Functions.RequestAnimDict(animDict)
+    if HasAnimDictLoaded(animDict) then return end
+    RequestAnimDict(animDict)
+    while not HasAnimDictLoaded(animDict) do
+        Wait(0)
+    end
+end
+
+function QBCore.Functions.GetClosestBone(entity, list)
+    local playerCoords, bone, coords, distance = GetEntityCoords(PlayerPedId())
+    for _, element in pairs(list) do
+        local boneCoords = GetWorldPositionOfEntityBone(entity, element.id or element)
+        local boneDistance = #(playerCoords - boneCoords)
+        if not coords then
+            bone, coords, distance = element, boneCoords, boneDistance
+        elseif distance > boneDistance then
+            bone, coords, distance = element, boneCoords, boneDistance
+        end
+    end
+    if not bone then
+        bone = { id = GetEntityBoneIndexByName(entity, 'bodyshell'), type = 'remains', name = 'bodyshell' }
+        coords = GetWorldPositionOfEntityBone(entity, bone.id)
+        distance = #(coords - playerCoords)
+    end
+    return bone, coords, distance
+end
+
+function QBCore.Functions.GetBoneDistance(entity, boneType, boneIndex)
+    local bone
+    if boneType == 1 then
+        bone = GetPedBoneIndex(entity, boneIndex)
+    else
+        bone = GetEntityBoneIndexByName(entity, boneIndex)
+    end
+    local boneCoords = GetWorldPositionOfEntityBone(entity, bone)
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    return #(boneCoords - playerCoords)
+end
+
+function QBCore.Functions.AttachProp(ped, model, boneId, x, y, z, xR, yR, zR, vertex)
+    local modelHash = type(model) == 'string' and joaat(model) or model
+    local bone = GetPedBoneIndex(ped, boneId)
+    QBCore.Functions.LoadModel(modelHash)
+    local prop = CreateObject(modelHash, 1.0, 1.0, 1.0, 1, 1, 0)
+    AttachEntityToEntity(prop, ped, bone, x, y, z, xR, yR, zR, 1, 1, 0, 1, not vertex and 2 or 0, 1)
+    SetModelAsNoLongerNeeded(modelHash)
+    return prop
+end
+
+function QBCore.Functions.SpawnClear(coords, radius)
+    if coords then
+        coords = type(coords) == 'table' and vec3(coords.x, coords.y, coords.z) or coords
+    else
+        coords = GetEntityCoords(PlayerPedId())
+    end
+    local vehicles = GetGamePool('CVehicle')
+    local closeVeh = {}
+    for i = 1, #vehicles, 1 do
+        local vehicleCoords = GetEntityCoords(vehicles[i])
+        local distance = #(vehicleCoords - coords)
+        if distance <= radius then
+            closeVeh[#closeVeh + 1] = vehicles[i]
+        end
+    end
+    if #closeVeh > 0 then return false end
+    return true
+end
+
+function QBCore.Functions.LoadAnimSet(animSet)
+    if HasAnimSetLoaded(animSet) then return end
+    RequestAnimSet(animSet)
+    while not HasAnimSetLoaded(animSet) do
+        Wait(0)
+    end
+end
+
 function QBCore.Functions.LoadParticleDictionary(dictionary)
     if HasNamedPtfxAssetLoaded(dictionary) then return end
     RequestNamedPtfxAsset(dictionary)
@@ -945,16 +1032,16 @@ function QBCore.Functions.GetCardinalDirection(entity)
     if DoesEntityExist(entity) then
         local heading = GetEntityHeading(entity)
         if ((heading >= 0 and heading < 45) or (heading >= 315 and heading < 360)) then
-            return "North"
+            return 'North'
         elseif (heading >= 45 and heading < 135) then
-            return "West"
+            return 'West'
         elseif (heading >= 135 and heading < 225) then
-            return "South"
+            return 'South'
         elseif (heading >= 225 and heading < 315) then
-            return "East"
+            return 'East'
         end
     else
-        return "Cardinal Direction Error"
+        return 'Cardinal Direction Error'
     end
 end
 
@@ -962,18 +1049,15 @@ function QBCore.Functions.GetCurrentTime()
     local obj = {}
     obj.min = GetClockMinutes()
     obj.hour = GetClockHours()
-
     if obj.hour <= 12 then
-        obj.ampm = "AM"
+        obj.ampm = 'AM'
     elseif obj.hour >= 13 then
-        obj.ampm = "PM"
+        obj.ampm = 'PM'
         obj.formattedHour = obj.hour - 12
     end
-
     if obj.min <= 9 then
-        obj.formattedMin = "0" .. obj.min
+        obj.formattedMin = '0' .. obj.min
     end
-
     return obj
 end
 
@@ -984,8 +1068,6 @@ function QBCore.Functions.GetGroundZCoord(coords)
     if retval then
         return vector3(coords.x, coords.y, groundZ)
     else
-        print('Couldn\'t find Ground Z Coordinates given 3D Coordinates')
-        print(coords)
         return coords
     end
 end

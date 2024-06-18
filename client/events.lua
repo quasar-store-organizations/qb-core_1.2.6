@@ -120,7 +120,7 @@ end)
 
 RegisterNetEvent('QBCore:Command:SpawnVehicle', function(vehName)
     local ped = PlayerPedId()
-    local hash = GetHashKey(vehName)
+    local hash = joaat(vehName)
     local veh = GetVehiclePedIsUsing(ped)
     if not IsModelInCdimage(hash) then return end
     RequestModel(hash)
@@ -190,14 +190,18 @@ RegisterNetEvent('QBCore:Player:UpdatePlayerData', function()
     TriggerServerEvent('QBCore:UpdatePlayer')
 end)
 
-RegisterNetEvent('QBCore:Notify', function(text, type, length)
-    QBCore.Functions.Notify(text, type, length)
+RegisterNetEvent('QBCore:Notify', function(text, type, length, icon)
+    QBCore.Functions.Notify(text, type, length, icon)
 end)
 
 -- This event is exploitable and should not be used. It has been deprecated, and will be removed soon.
 RegisterNetEvent('QBCore:Client:UseItem', function(item)
     QBCore.Debug(string.format('%s triggered QBCore:Client:UseItem by ID %s with the following data. This event is deprecated due to exploitation, and will be removed soon. Check qb-inventory for the right use on this event.', GetInvokingResource(), GetPlayerServerId(PlayerId())))
     QBCore.Debug(item)
+end)
+
+RegisterNUICallback('getNotifyConfig', function(_, cb)
+    cb(QBCore.Config.Notify)
 end)
 
 -- Callback Events --
