@@ -3968,6 +3968,30 @@ QBShared.Items = {
         ['combinable'] = nil,
         ['description'] = 'Sneaky Breaky...'
     },
+    ['cigarettebox'] = {
+        ['name'] = 'cigarettebox',
+        ['label'] = 'Cigarette Box',
+        ['weight'] = 5,
+        ['type'] = 'item',
+        ['image'] = 'cigarettebox.png',
+        ['unique'] = true,
+        ['useable'] = true,
+        ['shouldClose'] = true,
+        ['combinable'] = nil,
+        ['description'] = 'Open it, there will be 20 cigarettes inside'
+    },
+    ['cigarette'] = {
+        ['name'] = 'cigarette',
+        ['label'] = 'Cigarette',
+        ['weight'] = 1,
+        ['type'] = 'item',
+        ['image'] = 'cigarette.png',
+        ['unique'] = false,
+        ['useable'] = true,
+        ['shouldClose'] = false,
+        ['combinable'] = nil,
+        ['description'] = 'A cigar, a simple cigarette...'
+    },
     ['lighter'] = {
         ['name'] = 'lighter',
         ['label'] = 'Lighter',
